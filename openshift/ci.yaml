@@ -1,0 +1,384 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: lemonldap
+  template: lemonldap-jenkins-pipeline
+message: |-
+  For more information about using this template, see https://github.com/Worteks/wsweet-ci
+metadata:
+  annotations:
+    description: LemonLDAP-NG - Jenkinsfile
+      see https://github.com/Worteks/docker-lemonldap
+    iconClass: icon-perl
+    openshift.io/display-name: LemonLDAP-NG CI
+    openshift.io/documentation-url: https://github.com/Worteks/wsweet-ci
+    openshift.io/provider-display-name: Worteks
+    openshift.io/support-url: https://www.worteks.com
+    tags: lemonldap-ng,lemonldap,lemon,openldap,ldap,sso
+  name: lemonldap-jenkins-pipeline
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Tests Wsweet LemonLDAP-NG images
+    name: lemonldap-jenkins-pipeline
+  spec:
+    strategy:
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          def frontName    = 'cilemon'
+          def templateMark = 'lemon-jenkins-ci'
+          def templateSel  = 'jenkins-ci-mark'
+          pipeline {
+              agent {
+                  node {
+                      label 'maven'
+                  }
+              }
+              options {
+                  timeout(time: 95, unit: 'MINUTES')
+              }
+              parameters {
+                  string(defaultValue: 'master', description: 'Apache Docker Image Tag', name: 'apacheTag')
+                  string(defaultValue: 'secr3t', description: 'OpenLDAP Demo Password', name: 'demoPassword')
+                  string(defaultValue: 'master', description: 'LemonLDAP-NG Docker Image - Source Git Branch', name: 'lemonldapBranch')
+                  string(defaultValue: 'master', description: 'LemonLDAP-NG Docker Image - Source Git Hash', name: 'lemonldapHash')
+                  string(defaultValue: '${GIT_SOURCE_HOST}/Wsweet/docker-lemonldap.git', description: 'LemonLDAP-NG Docker Image - Source Git Repository', name: 'lemonldapRepo')
+                  string(defaultValue: 'master', description: 'OpenLDAP Docker Image Tag', name: 'ldapTag')
+                  string(defaultValue: '${OPENSHIFT_ROUTED_DOMAIN}', description: 'CI Router Root Domain', name: 'rootDomain')
+              }
+              stages {
+                  stage('preamble') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      echo "Using project: ${openshift.project()}"
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('pre-cleanup') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      echo "cleaning up previous assets for lemon-${frontName}-${params.lemonldapHash}"
+                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('create') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      def namespace = "${openshift.project()}"
+                                      try {
+                                          timeout(10) {
+                                              def cloneProto = "http"
+                                              def created
+                                              def objectsFromTemplate
+                                              def privateRepo = false
+                                              def repoHost = params.lemonldapRepo.split('/')[0]
+                                              def templatePath = "/tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}/openshift"
+                                              sh "git config --global http.sslVerify false"
+                                              sh "rm -fr tmplemonldap${params.lemonldapBranch}; mkdir -p tmplemonldap${params.lemonldapBranch}"
+                                              dir ("tmplemonldap${params.lemonldapBranch}") {
+                                                  try {
+                                                      withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                          sh "echo 'https://${GIT_TOKEN}@${params.lemonldapRepo}' >cloneFrom"
+                                                          cloneProto = "https"
+                                                          privateRepo = true
+                                                      }
+                                                      echo "cloning ${params.lemonldapRepo} over https, using ${repoHost} token"
+                                                  } catch(e) {
+                                                      echo "caught ${e} - assuming no credentials required"
+                                                      sh "echo 'http://${params.lemonldapRepo}' >cloneFrom 2>/dev/null"
+                                                      echo "cloning ${params.lemonldapRepo} over http"
+                                                  }
+                                                  def cloneAddress = readFile('cloneFrom').trim()
+                                                  sh "rm -f cloneFrom"
+                                                  try {
+                                                      // use ${params.lemonldapHash} instead of branch?
+                                                      // not critical, as only defines which ci.yaml template would be loaded
+                                                      // not certain the branch param accepts exact hashes anyway
+                                                      git([ branch: "${params.lemonldapBranch}", changelog: false, poll: false, url: cloneAddress ])
+                                                  } catch(e) {
+                                                      echo "caught ${e} - failed cloning ${params.lemonldapRepo}#${params.lemonldapBranch}"
+                                                      sh "cd .. ; rm -fr tmplemonldap${params.lemonldapBranch}"
+                                                      throw e
+                                                  }
+                                              }
+                                              try {
+                                                  sh "test -d ${templatePath}"
+                                              } catch (e) {
+                                                  echo "Could not find ./openshift in ${params.lemonldapRepo}#${params.lemonldapBranch}"
+                                                  sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
+                                                  throw e
+                                              }
+                                              echo "Processing LLNG:${params.lemonldapHash}, from ${repoHost}, tagging to ${params.lemonldapBranch}"
+                                              echo "Building from Apache:${params.apacheTag}, testing against OpenLDAP:${params.ldapTag}"
+                                              try {
+                                                  echo " == Creating ImageStream =="
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/imagestream.yaml",
+                                                      '-p', "FRONTNAME=wsweet")
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  created = openshift.apply(objectsFromTemplate)
+                                                  created.withEach {
+                                                      echo "Created ${it.name()} with labels ${it.object().metadata.labels}"
+                                                  }
+                                              } catch(e) {
+                                                  echo "Failed creating ImageStream"
+                                                  echo "${e}"
+                                              }
+                                              try {
+                                                  echo " == Creating BuildConfigs =="
+                                                  if (privateRepo) {
+                                                      withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                          objectsFromTemplate = openshift.process("-f", "${templatePath}/build-with-secret.yaml",
+                                                              '-p', "APACHE_IMAGESTREAM_TAG=apache-wsweet:${params.apacheTag}",
+                                                              '-p', "FRONTNAME=wsweet",
+                                                              '-p', "GIT_DEPLOYMENT_TOKEN=${GIT_TOKEN}",
+                                                              '-p', "LLNG_REPOSITORY_REF=${params.lemonldapHash}",
+                                                              '-p', "LLNG_REPOSITORY_URL=${cloneProto}://${params.lemonldapRepo}")
+                                                      }
+                                                  } else {
+                                                      objectsFromTemplate = openshift.process("-f", "${templatePath}/build.yaml",
+                                                          '-p', "APACHE_IMAGESTREAM_TAG=apache-wsweet:${params.apacheTag}",
+                                                          '-p', "FRONTNAME=wsweet",
+                                                          '-p', "LLNG_REPOSITORY_REF=${params.lemonldapHash}",
+                                                          '-p', "LLNG_REPOSITORY_URL=${cloneProto}://${params.lemonldapRepo}")
+                                                  }
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  for (o in objectsFromTemplate) {
+                                                      o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}"
+                                                  }
+                                                  created = openshift.apply(objectsFromTemplate)
+                                                  created.withEach {
+                                                      echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
+                                                  }
+                                              } catch(e) {
+                                                  echo "Failed creating BuildConfigs"
+                                                  echo "${e}"
+                                              }
+                                              try {
+                                                  echo " == Creating Secrets =="
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/secret.yaml",
+                                                      '-p', "FRONTNAME=${frontName}-${params.lemonldapHash}",
+                                                      '-p', "OPENLDAP_DEMO_PASSWORD=${params.demoPassword}")
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  for (o in objectsFromTemplate) {
+                                                      o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}"
+                                                  }
+                                                  created = openshift.create(objectsFromTemplate)
+                                                  created.withEach {
+                                                      echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
+                                                  }
+                                              } catch(e) {
+                                                  echo "Failed creating Secret"
+                                                  echo "${e}"
+                                              }
+                                              echo " == Creating Demo =="
+                                              objectsFromTemplate = openshift.process("-f", "${templatePath}/run-ephemeral.yaml",
+                                                  '-p', "FRONTNAME=${frontName}-${params.lemonldapHash}",
+                                                  '-p', "LEMON_IMAGE_TAG=${params.lemonldapHash}",
+                                                  '-p', "OPENLDAP_IMAGESTREAM_TAG=openldap-wsweet:${params.ldapTag}",
+                                                  '-p', "WSWEET_BASE_SUFFIX=dc=demo,dc=local",
+                                                  '-p', "WSWEET_ROOT_DOMAIN=${params.lemonldapHash}.${params.rootDomain}")
+
+                                              echo "The template will create ${objectsFromTemplate.size()} objects"
+                                              for (o in objectsFromTemplate) {
+                                                  o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}"
+                                              }
+                                              created = openshift.create(objectsFromTemplate)
+                                              created.withEach {
+                                                  echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
+                                              }
+                                          }
+                                          sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
+                                      } catch(e) {
+                                          echo "in catch block while creating resources, cleaning up lemon-${frontName}-${params.lemonldapHash}"
+                                          sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
+                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          echo "Caught: ${e}"
+                                          currentBuild.result = 'FAILURE'
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('build') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(60) {
+                                              echo "watching lemon-wsweet-${params.lemonldapHash} docker image build"
+                                              def builds = openshift.selector("bc", [ name: "lemon-wsweet-${params.lemonldapHash}" ]).related('builds')
+                                              builds.untilEach(1) {
+                                                  return (it.object().status.phase == "Complete")
+                                              }
+                                          }
+                                      } catch(e) {
+                                          echo "in catch block while building docker image, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
+                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          echo "Caught: ${e}"
+                                          currentBuild.result = 'FAILURE'
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('deploy') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(10) {
+                                              def namespace = "${openshift.project()}"
+                                              try {
+                                                  sh """
+                                                  oc login https://kubernetes.default.svc.cluster.local --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --token=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > /dev/null 2>&1
+                                                  oc describe -n ${namespace} imagestreamtag lemon-wsweet:${params.lemonldapHash} || exit 1
+                                                  """
+                                              } catch(e) {
+                                                  echo "in catch block while looking for LemonLDAP-NG image"
+                                                  echo "Assuming build failed. Sleeping for 3 minutes and re-scheduling job"
+                                                  sleep 180
+                                                  def jobName   = "${namespace}/${namespace}-lemonldap-jenkins-pipeline"
+                                                  def jobParams = [
+                                                          [$class: 'StringParameterValue', name: "lemonldapBranch", value: params.lemonldapBranch],
+                                                          [$class: 'StringParameterValue', name: "lemonldapHash", value: params.lemonldapHash],
+                                                          [$class: 'StringParameterValue', name: "lemonldapRepo", value: params.lemonldapRepo]
+                                                      ]
+                                                  try {
+                                                      build job: jobName, parameters: jobParams, propagate: false, wait: false
+                                                  } catch(e1) {
+                                                      echo "caught ${e1}"
+                                                  }
+                                                  throw e
+                                              }
+                                              retry(2) {
+                                                  echo "watching ldap-${frontName}-${params.lemonldapHash} deployment rollout"
+                                                  def dc = openshift.selector("dc", [ name: "openldap-${frontName}-${params.lemonldapHash}" ]).related('pods')
+                                                  dc.untilEach(1) {
+                                                      return (it.object().status.phase == "Running")
+                                                  }
+                                                  echo "watching lemon-${frontName}-${params.lemonldapHash} deployment rollout"
+                                                  dc = openshift.selector("dc", [ name: "lemon-${frontName}-${params.lemonldapHash}" ]).related('pods')
+                                                  dc.untilEach(1) {
+                                                      return (it.object().status.phase == "Running")
+                                                  }
+                                              }
+                                          }
+                                      } catch(e) {
+                                          echo "in catch block while deploying, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
+                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          echo "Caught: ${e}"
+                                          currentBuild.result = 'FAILURE'
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('check') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(5) {
+                                              echo "waiting an additional 2 minutes for applications to finish starting up"
+                                              sleep 120
+                                              retry(3) {
+                                                  def response = httpRequest ignoreSslErrors: true, url: "https://auth.${params.lemonldapHash}.${params.rootDomain}", timeout: 30, httpMode: 'GET'
+                                                  println("GET portal status: " + response.status)
+                                                  println("GET portal content: " + response.content)
+                                              }
+                                          }
+                                      } catch(e) {
+                                          echo "in catch block while checking LemonLDAP-NG, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
+                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                          echo "Caught: ${e}"
+                                          currentBuild.result = 'FAILURE'
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('tag') {
+                      steps {
+                          script {
+                              if ("${params.lemonldapBranch}" == "${params.lemonldapHash}") {
+                                  echo "skipping tag - source matches target"
+                              } else {
+                                  openshift.withCluster() {
+                                      openshift.withProject() {
+                                          try {
+                                              timeout(5) {
+                                                  def namespace = "${openshift.project()}"
+                                                  retry(3) {
+                                                      sh """
+                                                      oc login https://kubernetes.default.svc.cluster.local --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --token=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > /dev/null 2>&1
+                                                      oc tag -n ${namespace} lemon-wsweet:${params.lemonldapHash} lemon-wsweet:${params.lemonldapBranch}
+                                                      """
+                                                  }
+                                              }
+                                          } catch(e) {
+                                              echo "in catch block while tagging LemonLDAP-NG image, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
+                                              openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                              openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                              echo "Caught: ${e}"
+                                              currentBuild.result = 'FAILURE'
+                                              throw e
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('post-cleanup') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+      type: JenkinsPipeline
+parameters:
+- name: GIT_SOURCE_HOST
+  description: Git FQDN we would build images from
+  displayName: Git
+  value: github.com
+- name: OPENSHIFT_ROUTED_DOMAIN
+  description: OpenShift Routers-served Root Domain
+  displayName: CI Router Domain
+  value: ci.dev.wopla.io
