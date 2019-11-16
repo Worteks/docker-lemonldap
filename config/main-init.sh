@@ -4,7 +4,7 @@ if test "$DEBUG"; then
 else
     APACHE_LOG_LEVEL=notice
 fi
-. /usr/local/bin/nswrapper.sh
+. /usr/local/bin/nsswrapper.sh
 if test "$DEBUG"; then
     echo INFO: running as `id -a`
 fi
