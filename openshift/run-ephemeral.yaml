@@ -345,6 +345,7 @@ objects:
         automatic: true
         containerNames:
         - lemon
+        - job
         from:
           kind: ImageStreamTag
           name: lemon-${LEMON_IMAGE_FRONTNAME}:${LEMON_IMAGE_TAG}
