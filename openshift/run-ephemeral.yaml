@@ -219,78 +219,6 @@ objects:
   kind: DeploymentConfig
   metadata:
     labels:
-      name: lemon-${FRONTNAME}-job
-    name: lemon-${FRONTNAME}-job
-  spec:
-    replicas: 1
-    selector:
-      name: lemon-${FRONTNAME}-job
-    strategy:
-      type: Rolling
-    template:
-      metadata:
-        labels:
-          name: lemon-${FRONTNAME}-job
-      spec:
-        dnsPolicy: ClusterFirst
-        containers:
-        - command:
-          - dumb-init
-          - "--"
-          - /job-lemonldap.sh
-          env:
-          - name: CLEANUP_PERIOD
-            value: "600"
-          - name: OPENLDAP_BASE
-            value: "${WSWEET_BASE_SUFFIX}"
-          - name: OPENLDAP_BIND_DN_PREFIX
-            value: cn=lemonldap,ou=services
-          - name: OPENLDAP_BIND_PW
-            valueFrom:
-              secretKeyRef:
-                name: openldap-${FRONTNAME}
-                key: lemonldap-password
-          - name: OPENLDAP_CONF_DN_PREFIX
-            value: ou=lemonldap,ou=config
-          - name: OPENLDAP_DOMAIN
-            value: "${WSWEET_ROOT_DOMAIN}"
-          - name: OPENLDAP_HOST
-            value: openldap-${FRONTNAME}
-          - name: OPENLDAP_HTTP_PORT
-            value: "8080"
-          - name: OPENLDAP_PORT
-            value: "1389"
-          - name: OPENLDAP_PROTO
-            value: ldap
-          image: ' '
-          imagePullPolicy: IfNotPresent
-          name: lemonjob
-          resources:
-            limits:
-              cpu: "${LEMON_CLEANUP_CPU_LIMIT}"
-              memory: "${LEMON_CLEANUP_MEMORY_LIMIT}"
-          volumeMounts:
-          - name: etcconf
-            mountPath: /etc/lemonldap-ng
-        restartPolicy: Always
-        volumes:
-        - emptyDir: {}
-          name: etcconf
-    triggers:
-    - type: ImageChange
-      imageChangeParams:
-        automatic: true
-        containerNames:
-        - lemonjob
-        from:
-          kind: ImageStreamTag
-          name: lemon-${LEMON_IMAGE_FRONTNAME}:${LEMON_IMAGE_TAG}
-        lastTriggeredImage: ''
-    - type: ConfigChange
-- apiVersion: v1
-  kind: DeploymentConfig
-  metadata:
-    labels:
       name: lemon-${FRONTNAME}
     name: lemon-${FRONTNAME}
   spec:
@@ -366,6 +294,53 @@ objects:
             mountPath: /etc/apache2/sites-enabled
           - name: etcconf
             mountPath: /etc/lemonldap-ng
+        - args:
+          - /job-lemonldap.sh
+          command:
+          - dumb-init
+          env:
+          - name: CLEANUP_PERIOD
+            value: "21600"
+          - name: OPENLDAP_BASE
+            value: "${WSWEET_BASE_SUFFIX}"
+          - name: OPENLDAP_BIND_DN_PREFIX
+            value: cn=lemonldap,ou=services
+          - name: OPENLDAP_BIND_PW
+            valueFrom:
+              secretKeyRef:
+                key: lemonldap-password
+                name: openldap-${FRONTNAME}
+          - name: OPENLDAP_CONF_DN_PREFIX
+            value: ou=lemonldap,ou=config
+          - name: OPENLDAP_DOMAIN
+            value: "${WSWEET_ROOT_DOMAIN}"
+          - name: OPENLDAP_HOST
+            value: openldap-${FRONTNAME}
+          - name: OPENLDAP_HTTP_PORT
+            value: "8080"
+          - name: OPENLDAP_PORT
+            value: "1389"
+          - name: OPENLDAP_PROTO
+            value: ldap
+          name: job
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          resources:
+            limits:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+          - name: jobconf
+            mountPath: /etc/lemonldap-ng
+        restartPolicy: Always
+        volumes:
+        - emptyDir: {}
+          name: etcconf
+        - emptyDir: {}
+          name: jobconf
+        - emptyDir: {}
+          name: apachesites
         restartPolicy: Always
         volumes:
         - emptyDir: {}
@@ -378,6 +353,7 @@ objects:
         automatic: true
         containerNames:
         - lemon
+        - job
         from:
           kind: ImageStreamTag
           name: lemon-${LEMON_IMAGE_FRONTNAME}:${LEMON_IMAGE_TAG}
