@@ -25,15 +25,22 @@ if test "$LEMON_CUSTOM_THEMES" -a -s $HOME/.ssh/id_rsa; then
 	    rm -fr .git
 	    find . -type f | while read file
 		do
-		    if test -s "$SKINS_ROOT/custom/$file"; then
-			rm -f "$SKINS_ROOT/custom/$file"
+		    if echo "$file" | grep /images/ >/dev/nul; then
+			dfile=`echo "$file" | sed 's|^.*/images/||'`
+			TARGET=htdocs/static/custom
+		    else
+			dfile="$file"
+			TARGET=templates/custom
 		    fi
-		    echo "Installing custom theme asset: $file"
-		    tdir=`dirname "$file"`
-		    if ! test -d "$SKINS_ROOT/custom/$tdir"; then
-			mkdir -p "$SKINS_ROOT/custom/$tdir"
+		    if test -s "$SKINS_ROOT/$TARGET/$dfile"; then
+			rm -f "$SKINS_ROOT/$TARGET/$dfile"
 		    fi
-		    cp -f "$file" "$SKINS_ROOT/custom/$file"
+		    echo "Installing custom theme asset: $dfile"
+		    tdir=`dirname "$dfile"`
+		    if ! test -d "$SKINS_ROOT/$TARGET/$tdir"; then
+			mkdir -p "$SKINS_ROOT/$TARGET/$tdir"
+		    fi
+		    cp -f "$file" "$SKINS_ROOT/$TARGET/$dfile"
 		done
 	fi
 	rm -fr $HOME/.ssh/my_id_rsa /tmp/$GIT_DIR

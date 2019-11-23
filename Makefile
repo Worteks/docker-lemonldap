@@ -10,9 +10,8 @@ test:
 
 .PHONY: run
 run:
-	@@MAINDEV=`ip r | awk '/default/' | sed 's|.* dev \([^ ]*\).*|\1|'`; \
+	@@MAINDEV=`ip r | awk '/default/{print $$0;exit;}' | sed 's|.* dev \([^ ]*\).*|\1|'`; \
 	MAINIP=`ip r | awk "/ dev $$MAINDEV .* src /" | sed 's|.* src \([^ ]*\).*$$|\1|'`; \
-	MAINIP=172.17.0.2; \
 	docker run -e OPENLDAP_HOST=$$MAINIP \
 	    -e DEBUG=pleasedo \
 	    -e LLNG_PUB_PORT=8080 \
@@ -26,7 +25,7 @@ run:
 
 .PHONY: themeddemo
 themeddemo:
-	@@MAINDEV=`ip r | awk '/default/' | sed 's|.* dev \([^ ]*\).*|\1|'`; \
+	@@MAINDEV=`ip r | awk '/default/{print $$0;exit;}' | sed 's|.* dev \([^ ]*\).*|\1|'`; \
 	MAINIP=`ip r | awk "/ dev $$MAINDEV .* src /" | sed 's|.* src \([^ ]*\).*$$|\1|'`; \
 	docker run -e OPENLDAP_HOST=$$MAINIP \
 	    -e LEMON_CUSTOM_THEMES=git+ssh://some.private.git/Project/llng-themes-repo \

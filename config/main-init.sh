@@ -1,8 +1,10 @@
 if test "$DEBUG"; then
     APACHE_LOG_LEVEL=perl:debug
+    LLNG_LOG_LEVEL=debug
     set -x
 else
     APACHE_LOG_LEVEL=notice
+    LLNG_LOG_LEVEL=notice
 fi
 . /usr/local/bin/nsswrapper.sh
 if test "$DEBUG"; then
@@ -46,6 +48,7 @@ ls /usr/share/lemon/etc-lemonldap-ng/ 2>/dev/null | while read conf
     do
 	sed -e "s LDAP_PROTO $OPENLDAP_PROTO g" \
 	    -e "s LDAP_HOST $OPENLDAP_HOST g" \
+	    -e "s DEBUG $LLNG_LOG_LEVEL g" \
 	    -e "s HTTP_PORT $LLNG_HTTP_PORT g" \
 	    -e "s LOG_LEVEL $APACHE_LOG_LEVEL g" \
 	    -e "s LDAP_PORT $OPENLDAP_PORT g" \

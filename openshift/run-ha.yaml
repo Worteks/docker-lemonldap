@@ -42,8 +42,7 @@ objects:
               matchExpressions:
               - key: name
                 operator: In
-                values:
-                - openldap-${FRONTNAME}
+                values: [ "openldap-${FRONTNAME}" ]
             topologyKey: kubernetes.io/hostname
       metadata:
         labels:
@@ -224,77 +223,6 @@ objects:
     selector:
       name: openldap-${FRONTNAME}
     clusterIP: None
-- apiVersion: v1
-  kind: DeploymentConfig
-  metadata:
-    labels:
-      name: lemon-${FRONTNAME}-job
-    name: lemon-${FRONTNAME}-job
-  spec:
-    replicas: 1
-    selector:
-      name: lemon-${FRONTNAME}-job
-    strategy:
-      type: Rolling
-    template:
-      metadata:
-        labels:
-          name: lemon-${FRONTNAME}-job
-      spec:
-        dnsPolicy: ClusterFirst
-        containers:
-        - command:
-          - dumb-init
-          - "--"
-          env:
-          - name: CLEANUP_PERIOD
-            value: "600"
-          - name: OPENLDAP_BASE
-            value: "${WSWEET_BASE_SUFFIX}"
-          - name: OPENLDAP_BIND_DN_PREFIX
-            value: cn=lemonldap,ou=services
-          - name: OPENLDAP_BIND_PW
-            valueFrom:
-              secretKeyRef:
-                name: openldap-${FRONTNAME}
-                key: lemonldap-password
-          - name: OPENLDAP_CONF_DN_PREFIX
-            value: ou=lemonldap,ou=config
-          - name: OPENLDAP_DOMAIN
-            value: "${WSWEET_ROOT_DOMAIN}"
-          - name: OPENLDAP_HOST
-            value: openldap-${FRONTNAME}
-          - name: OPENLDAP_HTTP_PORT
-            value: "8080"
-          - name: OPENLDAP_PORT
-            value: "1389"
-          - name: OPENLDAP_PROTO
-            value: ldap
-          image: ' '
-          imagePullPolicy: IfNotPresent
-          name: lemonjob
-          resources:
-            limits:
-              cpu: "${LEMON_CLEANUP_CPU_LIMIT}"
-              memory: "${LEMON_CLEANUP_MEMORY_LIMIT}"
-          volumeMounts:
-          - name: etcconf
-            mountPath: /etc/lemonldap-ng
-        restartPolicy: Always
-        volumes:
-        - emptyDir: {}
-          name: etcconf
-    triggers:
-    - type: ImageChange
-      imageChangeParams:
-        automatic: true
-        containerNames:
-        - lemonjob
-        from:
-          kind: ImageStreamTag
-          name: lemon-${LEMON_IMAGE_FRONTNAME}:${LEMON_IMAGE_TAG}
-        lastTriggeredImage: ''
-    - type: ConfigChange
 - apiVersion: v1
   kind: DeploymentConfig
   metadata:
@@ -536,7 +464,7 @@ parameters:
   description: The ImageStreamTag we should pull images from
   displayName: Tag
   required: true
-  value: master
+  value: llng2
 - name: LEMON_MEMORY_LIMIT
   description: Maximum amount of memory a Lemon container can use
   displayName: Lemon Memory Limit
@@ -566,7 +494,7 @@ parameters:
   description: OpenLDAP Image Tag
   displayName: OpenLDAP ImageStream Tag
   required: true
-  value: openldap-wsweet:master
+  value: openldap-wsweet:llng2
 - name: OPENLDAP_MEMORY_LIMIT
   description: Maximum amount of memory an OpenLDAP container can use
   displayName: OpenLDAP Memory Limit
