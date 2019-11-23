@@ -28,43 +28,32 @@ objects:
       jenkinsPipelineStrategy:
         jenkinsfile: |-
           def frontName    = 'cilemon'
+          def gitCommitMsg = ''
           def templateMark = 'lemon-jenkins-ci'
           def templateSel  = 'jenkins-ci-mark'
           pipeline {
               agent {
-                  node {
-                      label 'maven'
-                  }
+                  node { label 'maven' }
               }
-              options {
-                  timeout(time: 95, unit: 'MINUTES')
-              }
+              options { timeout(time: 95, unit: 'MINUTES') }
               parameters {
                   string(defaultValue: 'master', description: 'Apache Docker Image Tag', name: 'apacheTag')
                   string(defaultValue: 'secr3t', description: 'OpenLDAP Demo Password', name: 'demoPassword')
+                  string(defaultValue: '3', description: 'Max Retry', name: 'jobMaxRetry')
+                  string(defaultValue: '1', description: 'Retry Count', name: 'jobRetryCount')
+                  string(defaultValue: 'master', description: 'OpenLDAP Docker Image Tag', name: 'ldapTag')
                   string(defaultValue: 'master', description: 'LemonLDAP-NG Docker Image - Source Git Branch', name: 'lemonldapBranch')
                   string(defaultValue: 'master', description: 'LemonLDAP-NG Docker Image - Source Git Hash', name: 'lemonldapHash')
                   string(defaultValue: '${GIT_SOURCE_HOST}/Wsweet/docker-lemonldap.git', description: 'LemonLDAP-NG Docker Image - Source Git Repository', name: 'lemonldapRepo')
-                  string(defaultValue: 'master', description: 'OpenLDAP Docker Image Tag', name: 'ldapTag')
                   string(defaultValue: '${OPENSHIFT_ROUTED_DOMAIN}', description: 'CI Router Root Domain', name: 'rootDomain')
               }
               stages {
-                  stage('preamble') {
-                      steps {
-                          script {
-                              openshift.withCluster() {
-                                  openshift.withProject() {
-                                      echo "Using project: ${openshift.project()}"
-                                  }
-                              }
-                          }
-                      }
-                  }
                   stage('pre-cleanup') {
                       steps {
                           script {
                               openshift.withCluster() {
                                   openshift.withProject() {
+                                      echo "Using project: ${openshift.project()}"
                                       echo "cleaning up previous assets for lemon-${frontName}-${params.lemonldapHash}"
                                       openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
                                       openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
@@ -92,123 +81,81 @@ objects:
                                               dir ("tmplemonldap${params.lemonldapBranch}") {
                                                   try {
                                                       withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
-                                                          sh "echo 'https://${GIT_TOKEN}@${params.lemonldapRepo}' >cloneFrom"
                                                           cloneProto = "https"
                                                           privateRepo = true
+                                                          echo "cloning ${params.lemonldapRepo} over https, using ${repoHost} token"
+                                                          try { git([ branch: "${params.lemonldapBranch}", url: "https://${GIT_TOKEN}@${params.lemonldapRepo}" ]) }
+                                                          catch(e2) {
+                                                              echo "Failed cloning ${params.lemonldapRepo}#${params.lemonldapBranch} - ${e2}"
+                                                              throw e2
+                                                          }
                                                       }
-                                                      echo "cloning ${params.lemonldapRepo} over https, using ${repoHost} token"
                                                   } catch(e) {
-                                                      echo "caught ${e} - assuming no credentials required"
-                                                      sh "echo 'http://${params.lemonldapRepo}' >cloneFrom 2>/dev/null"
-                                                      echo "cloning ${params.lemonldapRepo} over http"
+                                                      if (privateRepo != true) {
+                                                          echo "caught ${e} - assuming no credentials required"
+                                                          echo "cloning ${params.lemonldapRepo} over http"
+                                                          try { git([ branch: "${params.lemonldapBranch}", url: "http://${params.lemonldapRepo}" ]) }
+                                                          catch(e2) {
+                                                              echo "Failed cloning ${params.lemonldapRepo}#${params.lemonldapBranch} - ${e2}"
+                                                              throw e2
+                                                          }
+                                                      } else { throw e }
                                                   }
-                                                  def cloneAddress = readFile('cloneFrom').trim()
-                                                  sh "rm -f cloneFrom"
                                                   try {
-                                                      // use ${params.lemonldapHash} instead of branch?
-                                                      // not critical, as only defines which ci.yaml template would be loaded
-                                                      // not certain the branch param accepts exact hashes anyway
-                                                      git([ branch: "${params.lemonldapBranch}", changelog: false, poll: false, url: cloneAddress ])
-                                                  } catch(e) {
-                                                      echo "caught ${e} - failed cloning ${params.lemonldapRepo}#${params.lemonldapBranch}"
-                                                      sh "cd .. ; rm -fr tmplemonldap${params.lemonldapBranch}"
-                                                      throw e
-                                                  }
+                                                      gitCommitMsg = sh(returnStdout: true, script: "git log -n 1").trim()
+                                                  } catch(e) { echo "In non-critical catch block resolving commit message - ${e}" }
                                               }
-                                              try {
-                                                  sh "test -d ${templatePath}"
-                                              } catch (e) {
+                                              try { sh "test -d ${templatePath}" }
+                                              catch (e) {
                                                   echo "Could not find ./openshift in ${params.lemonldapRepo}#${params.lemonldapBranch}"
-                                                  sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
                                                   throw e
                                               }
                                               echo "Processing LLNG:${params.lemonldapHash}, from ${repoHost}, tagging to ${params.lemonldapBranch}"
                                               echo "Building from Apache:${params.apacheTag}, testing against OpenLDAP:${params.ldapTag}"
                                               try {
                                                   echo " == Creating ImageStream =="
-                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/imagestream.yaml",
-                                                      '-p', "FRONTNAME=wsweet")
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/imagestream.yaml", '-p', "FRONTNAME=wsweet")
                                                   echo "The template will create ${objectsFromTemplate.size()} objects"
                                                   created = openshift.apply(objectsFromTemplate)
-                                                  created.withEach {
-                                                      echo "Created ${it.name()} with labels ${it.object().metadata.labels}"
-                                                  }
-                                              } catch(e) {
-                                                  echo "Failed creating ImageStream"
-                                                  echo "${e}"
-                                              }
+                                                  created.withEach { echo "Created ${it.name()} with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating ImageStream - ${e}" }
                                               try {
                                                   echo " == Creating BuildConfigs =="
                                                   if (privateRepo) {
                                                       withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
-                                                          objectsFromTemplate = openshift.process("-f", "${templatePath}/build-with-secret.yaml",
-                                                              '-p', "APACHE_IMAGESTREAM_TAG=apache-wsweet:${params.apacheTag}",
-                                                              '-p', "FRONTNAME=wsweet",
-                                                              '-p', "GIT_DEPLOYMENT_TOKEN=${GIT_TOKEN}",
-                                                              '-p', "LLNG_REPOSITORY_REF=${params.lemonldapHash}",
-                                                              '-p', "LLNG_REPOSITORY_URL=${cloneProto}://${params.lemonldapRepo}")
+                                                          objectsFromTemplate = openshift.process("-f", "${templatePath}/build-with-secret.yaml", '-p', "FRONTNAME=wsweet",
+                                                              '-p', "APACHE_IMAGESTREAM_TAG=apache-wsweet:${params.apacheTag}", '-p', "GIT_DEPLOYMENT_TOKEN=${GIT_TOKEN}",
+                                                              '-p', "LLNG_REPOSITORY_REF=${params.lemonldapHash}", '-p', "LLNG_REPOSITORY_URL=${cloneProto}://${params.lemonldapRepo}")
                                                       }
                                                   } else {
-                                                      objectsFromTemplate = openshift.process("-f", "${templatePath}/build.yaml",
-                                                          '-p', "APACHE_IMAGESTREAM_TAG=apache-wsweet:${params.apacheTag}",
-                                                          '-p', "FRONTNAME=wsweet",
-                                                          '-p', "LLNG_REPOSITORY_REF=${params.lemonldapHash}",
-                                                          '-p', "LLNG_REPOSITORY_URL=${cloneProto}://${params.lemonldapRepo}")
+                                                      objectsFromTemplate = openshift.process("-f", "${templatePath}/build.yaml", '-p', "APACHE_IMAGESTREAM_TAG=apache-wsweet:${params.apacheTag}",
+                                                          '-p', "LLNG_REPOSITORY_REF=${params.lemonldapHash}", '-p', "FRONTNAME=wsweet", '-p', "LLNG_REPOSITORY_URL=${cloneProto}://${params.lemonldapRepo}")
                                                   }
                                                   echo "The template will create ${objectsFromTemplate.size()} objects"
-                                                  for (o in objectsFromTemplate) {
-                                                      o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}"
-                                                  }
+                                                  for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}" }
                                                   created = openshift.apply(objectsFromTemplate)
-                                                  created.withEach {
-                                                      echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
-                                                  }
-                                              } catch(e) {
-                                                  echo "Failed creating BuildConfigs"
-                                                  echo "${e}"
-                                              }
+                                                  created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating BuildConfigs - ${e}" }
                                               try {
                                                   echo " == Creating Secrets =="
-                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/secret.yaml",
-                                                      '-p', "FRONTNAME=${frontName}-${params.lemonldapHash}",
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/secret.yaml", '-p', "FRONTNAME=${frontName}-${params.lemonldapHash}",
                                                       '-p', "OPENLDAP_DEMO_PASSWORD=${params.demoPassword}")
                                                   echo "The template will create ${objectsFromTemplate.size()} objects"
-                                                  for (o in objectsFromTemplate) {
-                                                      o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}"
-                                                  }
+                                                  for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}" }
                                                   created = openshift.create(objectsFromTemplate)
-                                                  created.withEach {
-                                                      echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
-                                                  }
-                                              } catch(e) {
-                                                  echo "Failed creating Secret"
-                                                  echo "${e}"
-                                              }
+                                                  created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating Secret - ${e}" }
                                               echo " == Creating Demo =="
-                                              objectsFromTemplate = openshift.process("-f", "${templatePath}/run-ephemeral.yaml",
-                                                  '-p', "FRONTNAME=${frontName}-${params.lemonldapHash}",
-                                                  '-p', "LEMON_IMAGE_TAG=${params.lemonldapHash}",
-                                                  '-p', "OPENLDAP_IMAGESTREAM_TAG=openldap-wsweet:${params.ldapTag}",
-                                                  '-p', "WSWEET_BASE_SUFFIX=dc=demo,dc=local",
-                                                  '-p', "WSWEET_ROOT_DOMAIN=${params.lemonldapHash}.${params.rootDomain}")
-
+                                              objectsFromTemplate = openshift.process("-f", "${templatePath}/run-ephemeral.yaml", '-p', "FRONTNAME=${frontName}-${params.lemonldapHash}",
+                                                  '-p', "LEMON_IMAGE_TAG=${params.lemonldapHash}", '-p', "OPENLDAP_IMAGESTREAM_TAG=openldap-wsweet:${params.ldapTag}",
+                                                  '-p', "WSWEET_BASE_SUFFIX=dc=demo,dc=local", '-p', "WSWEET_ROOT_DOMAIN=${params.lemonldapHash}.${params.rootDomain}")
                                               echo "The template will create ${objectsFromTemplate.size()} objects"
-                                              for (o in objectsFromTemplate) {
-                                                  o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}"
-                                              }
+                                              for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.lemonldapHash}" }
                                               created = openshift.create(objectsFromTemplate)
-                                              created.withEach {
-                                                  echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
-                                              }
+                                              created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
                                           }
-                                          sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
                                       } catch(e) {
-                                          echo "in catch block while creating resources, cleaning up lemon-${frontName}-${params.lemonldapHash}"
-                                          sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
-                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          echo "Caught: ${e}"
-                                          currentBuild.result = 'FAILURE'
+                                          echo "In catch block while creating resources - ${e}"
                                           throw e
                                       }
                                   }
@@ -225,16 +172,10 @@ objects:
                                           timeout(60) {
                                               echo "watching lemon-wsweet-${params.lemonldapHash} docker image build"
                                               def builds = openshift.selector("bc", [ name: "lemon-wsweet-${params.lemonldapHash}" ]).related('builds')
-                                              builds.untilEach(1) {
-                                                  return (it.object().status.phase == "Complete")
-                                              }
+                                              builds.untilEach(1) { return (it.object().status.phase == "Complete") }
                                           }
                                       } catch(e) {
-                                          echo "in catch block while building docker image, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
-                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          echo "Caught: ${e}"
-                                          currentBuild.result = 'FAILURE'
+                                          echo "In catch block while building Docker image - ${e}"
                                           throw e
                                       }
                                   }
@@ -256,41 +197,20 @@ objects:
                                                   oc describe -n ${namespace} imagestreamtag lemon-wsweet:${params.lemonldapHash} || exit 1
                                                   """
                                               } catch(e) {
-                                                  echo "in catch block while looking for LemonLDAP-NG image"
-                                                  echo "Assuming build failed. Sleeping for 3 minutes and re-scheduling job"
-                                                  sleep 180
-                                                  def jobName   = "${namespace}/${namespace}-lemonldap-jenkins-pipeline"
-                                                  def jobParams = [
-                                                          [$class: 'StringParameterValue', name: "lemonldapBranch", value: params.lemonldapBranch],
-                                                          [$class: 'StringParameterValue', name: "lemonldapHash", value: params.lemonldapHash],
-                                                          [$class: 'StringParameterValue', name: "lemonldapRepo", value: params.lemonldapRepo]
-                                                      ]
-                                                  try {
-                                                      build job: jobName, parameters: jobParams, propagate: false, wait: false
-                                                  } catch(e1) {
-                                                      echo "caught ${e1}"
-                                                  }
+                                                  echo "In catch block while looking for LemonLDAP-NG image - -${e}"
                                                   throw e
                                               }
                                               retry(2) {
                                                   echo "watching ldap-${frontName}-${params.lemonldapHash} deployment rollout"
                                                   def dc = openshift.selector("dc", [ name: "openldap-${frontName}-${params.lemonldapHash}" ]).related('pods')
-                                                  dc.untilEach(1) {
-                                                      return (it.object().status.phase == "Running")
-                                                  }
+                                                  dc.untilEach(1) { return (it.object().status.phase == "Running") }
                                                   echo "watching lemon-${frontName}-${params.lemonldapHash} deployment rollout"
                                                   dc = openshift.selector("dc", [ name: "lemon-${frontName}-${params.lemonldapHash}" ]).related('pods')
-                                                  dc.untilEach(1) {
-                                                      return (it.object().status.phase == "Running")
-                                                  }
+                                                  dc.untilEach(1) { return (it.object().status.phase == "Running") }
                                               }
                                           }
                                       } catch(e) {
-                                          echo "in catch block while deploying, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
-                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          echo "Caught: ${e}"
-                                          currentBuild.result = 'FAILURE'
+                                          echo "In catch block while deploying - ${e}"
                                           throw e
                                       }
                                   }
@@ -314,11 +234,7 @@ objects:
                                               }
                                           }
                                       } catch(e) {
-                                          echo "in catch block while checking LemonLDAP-NG, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
-                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                          echo "Caught: ${e}"
-                                          currentBuild.result = 'FAILURE'
+                                          echo "In catch block while checking LemonLDAP-NG - ${e}"
                                           throw e
                                       }
                                   }
@@ -329,9 +245,8 @@ objects:
                   stage('tag') {
                       steps {
                           script {
-                              if ("${params.lemonldapBranch}" == "${params.lemonldapHash}") {
-                                  echo "skipping tag - source matches target"
-                              } else {
+                              if ("${params.lemonldapBranch}" == "${params.lemonldapHash}") { echo "skipping tag - source matches target" }
+                              else {
                                   openshift.withCluster() {
                                       openshift.withProject() {
                                           try {
@@ -345,11 +260,7 @@ objects:
                                                   }
                                               }
                                           } catch(e) {
-                                              echo "in catch block while tagging LemonLDAP-NG image, cleaning up lemon-${frontName}-${params.lemonldapHash} assets"
-                                              openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                              openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                              echo "Caught: ${e}"
-                                              currentBuild.result = 'FAILURE'
+                                              echo "In catch block while tagging LemonLDAP-NG image - ${e}"
                                               throw e
                                           }
                                       }
@@ -358,18 +269,45 @@ objects:
                           }
                       }
                   }
-                  stage('post-cleanup') {
-                      steps {
-                          script {
-                              openshift.withCluster() {
-                                  openshift.withProject() {
-                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
-                                  }
+              }
+              post {
+                  always {
+                      script {
+                          openshift.withCluster() {
+                              openshift.withProject() {
+                                  def namespace   = "${openshift.project()}"
+                                  def postJobName = "${namespace}/${namespace}-post-triggers-jenkins-pipeline"
+                                  currentBuild.description = """
+                                  ${params.lemonldapRepo} ${params.lemonldapBranch} (try ${params.jobRetryCount}/${params.jobMaxRetry})
+                                  ${gitCommitMsg}
+                                  """.stripIndent()
+                                  echo "cleaning up assets for lemonldap-wsweet-${params.lemonldapHash}"
+                                  sh "rm -fr /tmp/workspace/${namespace}/${namespace}-lemonldap-jenkins-pipeline/tmplemonldap${params.lemonldapBranch}"
+                                  openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                  openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.lemonldapHash}" ]).delete()
+                                  def jobParams = [
+                                          [$class: 'StringParameterValue', name: "hasUpstream", value: "yes"],
+                                          [$class: 'StringParameterValue', name: "jobMaxRetry", value: params.jobMaxRetry],
+                                          [$class: 'StringParameterValue', name: "jobRetryCount", value: params.jobRetryCount],
+                                          [$class: 'StringParameterValue', name: "jobStatus", value: currentBuild.currentResult],
+                                          [$class: 'StringParameterValue', name: "sourceBranch", value: params.lemonldapBranch],
+                                          [$class: 'StringParameterValue', name: "sourceComponent", value: "lemonldap"],
+                                          [$class: 'StringParameterValue', name: "sourceImageStream", value: "lemon-wsweet"],
+                                          [$class: 'StringParameterValue', name: "sourceRef", value: params.lemonldapHash],
+                                          [$class: 'StringParameterValue', name: "sourceRepo", value: params.lemonldapRepo],
+                                          [$class: 'StringParameterValue', name: "upstreamSourceBranch", value: params.apacheTag],
+                                          [$class: 'StringParameterValue', name: "upstreamSourceComponent", value: "apache"]
+                                      ]
+                                  try { build job: postJobName, parameters: jobParams, propagate: false, wait: false }
+                                  catch(e) { echo "caught ${e} starting Job post-process" }
                               }
                           }
                       }
                   }
+                  changed { echo "changed?" }
+                  failure { echo "Build failed (${params.jobRetryCount} out of ${params.jobMaxRetry})" }
+                  success { echo "success!" }
+                  unstable { echo "unstable?" }
               }
           }
       type: JenkinsPipeline

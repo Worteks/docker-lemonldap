@@ -3,13 +3,13 @@ FROM wsweet/apache:latest
 # LemonLDAP-NG image for OpenShift Origin
 
 LABEL io.k8s.description="LemonLDAP::NG offers a full AAA (Authentication Authorization Accounting) protection." \
-      io.k8s.display-name="LemonLDAP::NG 1.9.19" \
+      io.k8s.display-name="LemonLDAP::NG 1.9.21" \
       io.openshift.expose-services="8080:http" \
-      io.openshift.tags="sso,lemon,lemonldap,llng,lemonldapng,lemonldapng1918" \
+      io.openshift.tags="sso,lemon,lemonldap,llng,lemonldapng,lemonldapng1921" \
       io.openshift.non-scalable="false" \
       help="For more information visit https://github.com/Worteks/docker-lemonldap" \
       maintainer="Clément OUDOT <cleoud@worteks.com>, Paul CURIE <paucur@worteks.com>, Samuel MARTIN MORO <sammar@worteks.com>" \
-      version="1.9.19"
+      version="1.9.21"
 
 # wget -O /usr/local/bin/lemonldap-migrate-config-to-ldap \
 #  https://gitlab.ow2.org/lemonldap-ng/lemonldap-ng/raw/master/lemonldap-ng-common/scripts/convertConfig \
@@ -87,7 +87,7 @@ RUN echo "# Install LemonLDAP::NG dependencies" \
 	done \
     && mkdir /.ssh \
     && chmod 0770 /.ssh \
-    && chown root:root /.ssh \
+    && chown 1001:root /.ssh \
     && echo "# Remove spurious configuration" \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man \
 	/etc/ssh/ssh_config /tmp/lemonldap-ng-config /theme \
@@ -95,8 +95,9 @@ RUN echo "# Install LemonLDAP::NG dependencies" \
     && for dir in $SKINS_ROOT/custom /etc/lemonldap-ng \
 	/var/lib/lemonldap-ng/notifications; \
 	do \
-	    mkdir -p $dir 2>/dev/null; \
-	    chmod a+rwx -R $dir; \
+	    mkdir -p $dir 2>/dev/null \
+	    && chown -R 1001:root "$dir" \
+	    && chmod -R g=u "$dir"; \
 	done \
     && unset HTTP_PROXY HTTPS_PROXY NO_PROXY DO_UPGRADE http_proxy https_proxy
 

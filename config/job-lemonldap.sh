@@ -5,10 +5,10 @@
 do_cleanup()
 {
     if test -x /usr/share/lemonldap-ng/bin/purgeCentralCache; then
-	/usr/share/lemonldap-ng/bin/purgeCentralCache
+	/usr/share/lemonldap-ng/bin/purgeCentralCache -d
     fi
     if test -x /usr/share/lemonldap-ng/bin/purgeLocalCache; then
-	/usr/share/lemonldap-ng/bin/purgeLocalCache
+	/usr/share/lemonldap-ng/bin/purgeLocalCache -d
     fi
 }
 
